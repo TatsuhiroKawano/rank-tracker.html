@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RankScope</title>
+<script src="https://unpkg.com/react@18/umd/react.development.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script src="https://apis.google.com/js/api.js" async></script>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: #070e17; color: #c8d8e8; font-family: 'DM Mono', 'Courier New', monospace; }
+  ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #0a1520; } ::-webkit-scrollbar-thumb { background: #1a2d42; border-radius: 3px; }
+  input, select, button { font-family: inherit; }
+  input:focus { outline: 2px solid #38bdf8; outline-offset: 1px; }
+  a { color: #38bdf8; }
+  code { background: #1a2d42; padding: 1px 5px; border-radius: 3px; font-size: 11px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useCallback, useRef } = React;
+
+const STORAGE_KEY = "rank_tracker_v2";
+const SCOPES = "https://www.googleapis.com/auth/webmasters.readonly";
+const load = () => { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}"); } catch { return {}; } };
+const save = (d) => localStorage.setItem(STORAGE_KEY, JSON.stringify(d));
+const fmtDate = (d) => d.toISOString().split("T")[0];
+const nDaysAgo = (n) => { const d = new Date(); d.setDate(d.getDate()-n); return fmtDate(d); };
+const trend = (cur, prev) => {
+  if (prev==null||cur==null) return { icon:"—", color:"#445566" };
+  const d = prev-cur;
+  if (d>0) return { icon:`▲${d}`, color:"#22c55e" };
+  if (d<0) return { icon:`▼${Math.abs(d)}`, color:"#f87171" };
+  return { icon:"→", color:"#94a3b8" };
+};
+
+const S = {
+  root:{ display:"flex", minHeight:"100vh" },
+  sidebar:{ width:220, background:"#0a1520", borderRight:"1px solid #1a2d42", display:"flex", flexDirection:"column", padding:"0 0 24px", position:"sticky", top:0, height:"100vh", flexShrink:0 },
+  logo:{ display:"flex", alignItems:"center", gap:10, padding:"24px 20px 20px", borderBottom:"1px solid #1a2d42", marginBottom:16 },
+  logoMark:{ fontSize:22, color:"#38bdf8" }, logoText:{ fontSize:16, fontWeight:700, color:"#e2f0ff", letterSpacing:"0.05em" },
+  nav:{ flex:1, display:"flex", flexDirection:"column", gap:4, padding:"0 12px" },
+  navBtn:{ display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:8, border:"none", background:"transparent", color:"#5a7a9a", cursor:"pointer", fontSize:13, textAlign:"left" },
+  navBtnActive:{ background:"#0d2535", color:"#38bdf8", borderLeft:"3px solid #38bdf8", paddingLeft:9 },
+  navIcon:{ fontSize:16, width:20, textAlign:"center" },
+  sideStats:{ padding:"12px 20px", borderTop:"1px solid #1a2d42", borderBottom:"1px solid #1a2d42", margin:"0 0 16px" },
+  statRow:{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0" },
+  statLabel:{ fontSize:11, color:"#3a5a7a" }, statVal:{ fontSize:14, color:"#38bdf8", fontWeight:700 }, statMax:{ fontSize:10, color:"#3a5a7a", fontWeight:400 },
+  authBox:{ padding:"0 16px" },
+  authStatus:{ display:"flex", alignItems:"center", gap:6, color:"#22c55e", fontSize:12, marginBottom:8 },
+  dot:{ width:7, height:7, borderRadius:"50%", background:"#22c55e", display:"inline-block" },
+  main:{ flex:1, padding:"32px 36px", overflowX:"auto" },
+  topBar:{ display:"flex", alignItems:"flex-start", justifyContent:"space-between", marginBottom:24, flexWrap:"wrap", gap:12 },
+  topActions:{ display:"flex", gap:10, flexWrap:"wrap" },
+  pageTitle:{ margin:0, fontSize:22, color:"#e2f0ff", fontWeight:700 },
+  pageSub:{ margin:"4px 0 0", fontSize:12, color:"#3a5a7a" },
+  progressBar:{ height:3, background:"#1a2d42", borderRadius:2, marginBottom:20, overflow:"hidden" },
+  progressFill:{ height:"100%", background:"linear-gradient(90deg,#38bdf8,#818cf8)", transition:"width 0.3s", borderRadius:2 },
+  emptyState:{ padding:"40px 20px", textAlign:"center", color:"#2a3d50", fontSize:13 },
+  siteBlock:{ background:"#0a1520", border:"1px solid #1a2d42", borderRadius:10, marginBottom:16, overflow:"hidden" },
+  siteBlockHeader:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"12px 18px", background:"#091218", borderBottom:"1px solid #1a2d42" },
+  siteBlockUrl:{ fontSize:13, color:"#7aa8c8", fontWeight:700 },
+  siteBlockKwCount:{ fontSize:11, color:"#3a5a7a" },
+  noKwMsg:{ padding:"16px 18px", fontSize:12, color:"#2a3d50" },
+  table:{ width:"100%", borderCollapse:"collapse", fontSize:13 },
+  th:{ padding:"9px 16px", background:"#0a1520", color:"#3a5a7a", fontWeight:600, fontSize:11, textTransform:"uppercase", letterSpacing:"0.05em", textAlign:"center", borderBottom:"1px solid #111f2e" },
+  tdKw:{ padding:"10px 18px", color:"#c8d8e8", borderBottom:"1px solid #111f2e" },
+  tdCenter:{ padding:"10px 16px", textAlign:"center", borderBottom:"1px solid #111f2e" },
+  tdDate:{ padding:"10px 16px", textAlign:"center", fontSize:11, color:"#3a5a7a", borderBottom:"1px solid #111f2e" },
+  trEven:{ background:"#091218" },
+  rankNum:{ fontSize:20, fontWeight:700, color:"#38bdf8" },
+  rankSuffix:{ fontSize:11, fontWeight:400, color:"#3a5a7a", marginLeft:2 },
+  noData:{ color:"#2a3d50", fontSize:20 },
+  logBox:{ marginTop:20, background:"#0a1520", border:"1px solid #1a2d42", borderRadius:8, padding:16 },
+  logTitle:{ fontSize:11, color:"#3a5a7a", textTransform:"uppercase", marginBottom:8, letterSpacing:"0.05em" },
+  logScroll:{ maxHeight:180, overflowY:"auto" },
+  logRow:{ display:"grid", gridTemplateColumns:"20px 1fr 1fr 60px", gap:8, padding:"4px 0", fontSize:12, borderBottom:"1px solid #111f2e" },
+  logSite:{ color:"#5a7a9a", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" },
+  logKw:{ color:"#7aa8c8" }, logRank:{ textAlign:"right", color:"#38bdf8" },
+  chartCard:{ background:"#0a1520", border:"1px solid #1a2d42", borderRadius:10, padding:"20px 24px" },
+  chartMeta:{ display:"flex", gap:12, alignItems:"center", marginBottom:12 },
+  chartSite:{ fontSize:13, color:"#7aa8c8", fontWeight:700 },
+  chartKw:{ fontSize:12, color:"#38bdf8", background:"#0d2535", padding:"3px 8px", borderRadius:4 },
+  statStrip:{ display:"flex", marginTop:16, borderTop:"1px solid #1a2d42" },
+  statItem:{ flex:1, padding:"12px 0", textAlign:"center", borderRight:"1px solid #1a2d42" },
+  statItemLabel:{ fontSize:10, color:"#3a5a7a", textTransform:"uppercase", letterSpacing:"0.05em" },
+  statItemVal:{ fontSize:18, fontWeight:700, color:"#38bdf8", marginTop:4 },
+  section:{ background:"#0a1520", border:"1px solid #1a2d42", borderRadius:10, padding:"20px 24px", marginBottom:16 },
+  sectionTitle:{ fontSize:12, color:"#38bdf8", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:14, fontWeight:700 },
+  row:{ display:"flex", gap:10, alignItems:"center", flexWrap:"wrap" },
+  input:{ flex:1, background:"#070e17", border:"1px solid #1a2d42", borderRadius:6, padding:"9px 12px", color:"#c8d8e8", fontSize:13, outline:"none", minWidth:200 },
+  select:{ background:"#0a1520", border:"1px solid #1a2d42", borderRadius:6, padding:"8px 10px", color:"#7aa8c8", fontSize:12, cursor:"pointer" },
+  btnPrimary:{ background:"#38bdf8", color:"#070e17", border:"none", borderRadius:6, padding:"9px 18px", fontSize:13, fontWeight:700, cursor:"pointer", whiteSpace:"nowrap" },
+  btnOutline:{ background:"transparent", color:"#38bdf8", border:"1px solid #38bdf8", borderRadius:6, padding:"8px 16px", fontSize:12, cursor:"pointer" },
+  btnSmall:{ background:"transparent", color:"#38bdf8", border:"1px solid #1a2d42", borderRadius:4, padding:"7px 12px", fontSize:12, cursor:"pointer" },
+  btnMini:{ background:"transparent", color:"#38bdf8", border:"1px solid #1a2d42", borderRadius:4, padding:"4px 10px", fontSize:11, cursor:"pointer" },
+  btnDanger:{ background:"transparent", color:"#f87171", border:"1px solid #f8717144", borderRadius:4, padding:"4px 10px", fontSize:11, cursor:"pointer" },
+  siteCard:{ background:"#070e17", border:"1px solid #1a2d42", borderRadius:8, overflow:"hidden" },
+  siteCardHeader:{ display:"flex", alignItems:"center", justifyContent:"space-between", padding:"11px 16px", cursor:"pointer", userSelect:"none" },
+  siteCardUrl:{ fontSize:13, color:"#7aa8c8", display:"flex", alignItems:"center", gap:8 },
+  expandIcon:{ color:"#38bdf8", fontSize:12 },
+  kwCountBadge:{ fontSize:11, color:"#3a5a7a", background:"#0a1520", padding:"2px 8px", borderRadius:4 },
+  siteCardBody:{ padding:"12px 16px 14px", borderTop:"1px solid #1a2d42", background:"#091218" },
+  kwChipWrap:{ display:"flex", flexWrap:"wrap", gap:8, marginTop:12 },
+  kwChip:{ display:"flex", alignItems:"center", gap:6, background:"#0d2535", border:"1px solid #1a2d42", borderRadius:6, padding:"5px 10px", fontSize:12, color:"#7aa8c8" },
+  chipDel:{ background:"none", border:"none", color:"#3a5a7a", cursor:"pointer", fontSize:14, lineHeight:1, padding:0 },
+  hint:{ fontSize:11, color:"#3a5a7a", margin:"8px 0 0", lineHeight:1.8 },
+};
+
+function Sec({ title, children }) {
+  return <div style={S.section}><div style={S.sectionTitle}>{title}</div>{children}</div>;
+}
+
+function App() {
+  const [view, setView] = useState("dashboard");
+  const [gapiReady, setGapiReady] = useState(false);
+  const [token, setToken] = useState(null);
+  const [clientId, setClientId] = useState(() => localStorage.getItem("rt_client_id") || "");
+  const [tempClientId, setTempClientId] = useState("");
+  const [sites, setSites] = useState(() => load().sites || []);
+  const [records, setRecords] = useState(() => load().records || {});
+  const [fetching, setFetching] = useState(false);
+  const [progress, setProgress] = useState({ done:0, total:0 });
+  const [fetchLog, setFetchLog] = useState([]);
+  const [newSiteUrl, setNewSiteUrl] = useState("");
+  const [editingSiteId, setEditingSiteId] = useState(null);
+  const [newKwInputs, setNewKwInputs] = useState({});
+  const [filterSiteId, setFilterSiteId] = useState("ALL");
+  const [histSiteId, setHistSiteId] = useState("");
+  const [histKw, setHistKw] = useState("");
+
+  // Wait for gapi
+  useEffect(() => {
+    const check = setInterval(() => {
+      if (window.gapi) { clearInterval(check); window.gapi.load("client:auth2", () => setGapiReady(true)); }
+    }, 300);
+    return () => clearInterval(check);
+  }, []);
+
+  useEffect(() => { save({ sites, records }); }, [sites, records]);
+
+  const signIn = async () => {
+    if (!clientId) { alert("まず設定画面でClient IDを入力してください"); return; }
+    try {
+      await window.gapi.client.init({ clientId, scope: SCOPES, discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/webmasters/v3/rest"] });
+      const user = await window.gapi.auth2.getAuthInstance().signIn();
+      setToken(user.getAuthResponse().access_token);
+    } catch(e) { alert("認証失敗: " + (e.error || e.message)); }
+  };
+  const signOut = () => { window.gapi?.auth2?.getAuthInstance()?.signOut(); setToken(null); };
+
+  const addSite = () => {
+    const url = newSiteUrl.trim();
+    if (!url) return;
+    if (sites.length >= 100) { alert("最大100サイトです"); return; }
+    if (sites.find(s => s.url === url)) { alert("すでに登録済みです"); return; }
+    setSites([...sites, { id: Date.now().toString(), url, keywords: [] }]);
+    setNewSiteUrl("");
+  };
+  const removeSite = (id) => {
+    if (!confirm("このサイトを削除しますか？")) return;
+    setSites(sites.filter(s => s.id !== id));
+    const r = {...records}; Object.keys(r).forEach(k => { if (k.startsWith(id+"|||")) delete r[k]; }); setRecords(r);
+  };
+  const addKeyword = (siteId) => {
+    const kw = (newKwInputs[siteId]||"").trim(); if (!kw) return;
+    setSites(sites.map(s => {
+      if (s.id !== siteId) return s;
+      if (s.keywords.length >= 10) { alert("最大10個です"); return s; }
+      if (s.keywords.includes(kw)) return s;
+      return { ...s, keywords: [...s.keywords, kw] };
+    }));
+    setNewKwInputs({ ...newKwInputs, [siteId]: "" });
+  };
+  const removeKeyword = (siteId, kw) => setSites(sites.map(s => s.id!==siteId?s:{...s,keywords:s.keywords.filter(k=>k!==kw)}));
+
+  const fetchRanks = useCallback(async () => {
+    if (!token) { alert("Googleアカウントでサインインしてください"); return; }
+    const targets = sites.flatMap(s => s.keywords.map(kw => ({ site:s, kw })));
+    if (!targets.length) { alert("キーワードが設定されていません"); return; }
+    setFetching(true); setFetchLog([]);
+    const today = fmtDate(new Date()), startDate = nDaysAgo(28);
+    let done = 0; const newRec = {...records}; const logs = [];
+    for (const { site, kw } of targets) {
+      try {
+        const res = await window.gapi.client.request({
+          path: `https://www.googleapis.com/webmasters/v3/sites/${encodeURIComponent(site.url)}/searchAnalytics/query`,
+          method: "POST", headers: { Authorization: "Bearer "+token },
+          body: { startDate, endDate:today, dimensions:["query"], dimensionFilterGroups:[{filters:[{dimension:"query",operator:"equals",expression:kw}]}], rowLimit:1 },
+        });
+        const rows = res.result.rows||[];
+        const position = rows.length>0 ? Math.round(rows[0].position) : null;
+        newRec[`${site.id}|||${kw}|||${today}`] = position;
+        logs.push({ site, kw, position, ok:true });
+      } catch(e) { logs.push({ site, kw, position:null, ok:false, error:e.result?.error?.message||"エラー" }); }
+      done++; setProgress({ done, total:targets.length }); setFetchLog([...logs]);
+      await new Promise(r => setTimeout(r, 200));
+    }
+    setRecords(newRec); setFetching(false); setFetchLog(logs);
+  }, [token, sites, records]);
+
+  const getLatest = (siteId, kw) => {
+    const p = `${siteId}|||${kw}|||`;
+    const e = Object.entries(records).filter(([k])=>k.startsWith(p)).sort(([a],[b])=>b.localeCompare(a));
+    return e.length ? { date:e[0][0].split("|||")[2], rank:e[0][1] } : null;
+  };
+  const getPrev = (siteId, kw, curDate) => {
+    const p = `${siteId}|||${kw}|||`;
+    const e = Object.entries(records).filter(([k])=>k.startsWith(p)&&k.split("|||")[2]<curDate).sort(([a],[b])=>b.localeCompare(a));
+    return e.length ? e[0][1] : null;
+  };
+  const getHistory = (siteId, kw) => {
+    const p = `${siteId}|||${kw}|||`;
+    return Object.entries(records).filter(([k])=>k.startsWith(p)).map(([k,v])=>({date:k.split("|||")[2],rank:v})).sort((a,b)=>a.date.localeCompare(b.date));
+  };
+
+  const displaySites = filterSiteId==="ALL" ? sites : sites.filter(s=>s.id===filterSiteId);
+  const histSite = sites.find(s=>s.id===histSiteId);
+  const totalKw = sites.reduce((a,s)=>a+s.keywords.length,0);
+
+  return (
+    <div style={S.root}>
+      {/* SIDEBAR */}
+      <aside style={S.sidebar}>
+        <div style={S.logo}><span style={S.logoMark}>◈</span><span style={S.logoText}>RankScope</span></div>
+        <nav style={S.nav}>
+          {[{id:"dashboard",icon:"⬡",label:"ダッシュボード"},{id:"history",icon:"⟋",label:"履歴グラフ"},{id:"settings",icon:"⚙",label:"設定"}].map(({id,icon,label})=>(
+            <button key={id} style={{...S.navBtn,...(view===id?S.navBtnActive:{})}} onClick={()=>setView(id)}>
+              <span style={S.navIcon}>{icon}</span>{label}
+            </button>
+          ))}
+        </nav>
+        <div style={S.sideStats}>
+          <div style={S.statRow}><span style={S.statLabel}>サイト</span><span style={S.statVal}>{sites.length}<span style={S.statMax}>/100</span></span></div>
+          <div style={S.statRow}><span style={S.statLabel}>総KW数</span><span style={S.statVal}>{totalKw}</span></div>
+        </div>
+        <div style={S.authBox}>
+          {token ? (
+            <><div style={S.authStatus}><span style={S.dot}/>接続中</div><button style={S.btnOutline} onClick={signOut}>サインアウト</button></>
+          ) : (
+            <button style={S.btnPrimary} onClick={signIn} disabled={!gapiReady}>{gapiReady?"Googleでサインイン":"読み込み中..."}</button>
+          )}
+        </div>
+      </aside>
+
+      {/* MAIN */}
+      <main style={S.main}>
+        {/* DASHBOARD */}
+        {view==="dashboard" && (
+          <div>
+            <div style={S.topBar}>
+              <div><h1 style={S.pageTitle}>ダッシュボード</h1><p style={S.pageSub}>サイトごとの最新検索順位</p></div>
+              <div style={S.topActions}>
+                <select style={S.select} value={filterSiteId} onChange={e=>setFilterSiteId(e.target.value)}>
+                  <option value="ALL">全サイト表示</option>
+                  {sites.map(s=><option key={s.id} value={s.id}>{s.url.replace(/^https?:\/\//,"")}</option>)}
+                </select>
+                <button style={{...S.btnPrimary,opacity:fetching?0.6:1}} onClick={fetchRanks} disabled={fetching}>
+                  {fetching?`取得中 ${progress.done}/${progress.total}`:"▶ 順位取得"}
+                </button>
+              </div>
+            </div>
+            {fetching && <div style={S.progressBar}><div style={{...S.progressFill,width:`${(progress.done/(progress.total||1))*100}%`}}/></div>}
+            {displaySites.length===0 && <div style={S.emptyState}>「設定」からサイトとキーワードを追加してください</div>}
+            {displaySites.map(site=>(
+              <div key={site.id} style={S.siteBlock}>
+                <div style={S.siteBlockHeader}>
+                  <span style={S.siteBlockUrl}>{site.url.replace(/^https?:\/\//,"")}</span>
+                  <span style={S.siteBlockKwCount}>{site.keywords.length}キーワード</span>
+                </div>
+                {site.keywords.length===0 ? <div style={S.noKwMsg}>キーワード未設定 — 設定画面で追加してください</div> : (
+                  <table style={S.table}>
+                    <thead><tr>
+                      <th style={{...S.th,textAlign:"left"}}>キーワード</th>
+                      <th style={S.th}>最新順位</th><th style={S.th}>前回比</th><th style={S.th}>取得日</th><th style={S.th}>グラフ</th>
+                    </tr></thead>
+                    <tbody>
+                      {site.keywords.map((kw,ki)=>{
+                        const latest = getLatest(site.id,kw);
+                        const prev = latest ? getPrev(site.id,kw,latest.date) : null;
+                        const t = trend(latest?.rank,prev);
+                        return (
+                          <tr key={kw} style={ki%2===0?S.trEven:{}}>
+                            <td style={S.tdKw}>{kw}</td>
+                            <td style={S.tdCenter}>{latest?.rank!=null?<span style={S.rankNum}>{latest.rank}<span style={S.rankSuffix}>位</span></span>:<span style={S.noData}>—</span>}</td>
+                            <td style={S.tdCenter}><span style={{color:t.color,fontWeight:700,fontSize:12}}>{t.icon}</span></td>
+                            <td style={S.tdDate}>{latest?.date||"—"}</td>
+                            <td style={S.tdCenter}><button style={S.btnMini} onClick={()=>{setHistSiteId(site.id);setHistKw(kw);setView("history");}}>グラフ →</button></td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            ))}
+            {fetchLog.length>0 && (
+              <div style={S.logBox}>
+                <div style={S.logTitle}>取得ログ</div>
+                <div style={S.logScroll}>
+                  {[...fetchLog].reverse().map((l,i)=>(
+                    <div key={i} style={S.logRow}>
+                      <span style={{color:l.ok?"#22c55e":"#f87171"}}>{l.ok?"✓":"✗"}</span>
+                      <span style={S.logSite}>{l.site.url.replace(/^https?:\/\//,"")}</span>
+                      <span style={S.logKw}>{l.kw}</span>
+                      <span style={S.logRank}>{l.position!=null?`${l.position}位`:(l.error||"圏外")}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* HISTORY */}
+        {view==="history" && (
+          <div>
+            <h1 style={S.pageTitle}>履歴グラフ</h1>
+            <div style={{display:"flex",gap:12,marginBottom:24,flexWrap:"wrap"}}>
+              <select style={S.select} value={histSiteId} onChange={e=>{setHistSiteId(e.target.value);setHistKw("");}}>
+                <option value="">サイトを選択...</option>
+                {sites.map(s=><option key={s.id} value={s.id}>{s.url.replace(/^https?:\/\//,"")}</option>)}
+              </select>
+              {histSite && (
+                <select style={S.select} value={histKw} onChange={e=>setHistKw(e.target.value)}>
+                  <option value="">キーワードを選択...</option>
+                  {histSite.keywords.map(k=><option key={k} value={k}>{k}</option>)}
+                </select>
+              )}
+            </div>
+            {histSiteId&&histKw&&(()=>{
+              const hist = getHistory(histSiteId,histKw);
+              if (!hist.length) return <div style={S.emptyState}>データがありません。「順位取得」を実行してください。</div>;
+              const vr = hist.map(h=>h.rank).filter(r=>r!=null);
+              const maxR = Math.max(...vr,10);
+              const W=640,H=220,pL=44,pR=20,pT=20,pB=28;
+              const sx = i => pL+(i/(hist.length-1||1))*(W-pL-pR);
+              const sy = r => r==null?null:pT+((r-1)/(maxR-1||1))*(H-pT-pB);
+              const pts = hist.map((h,i)=>({x:sx(i),y:sy(h.rank),...h}));
+              const lp = pts.filter(p=>p.y!=null);
+              const d = lp.map((p,i)=>`${i===0?"M":"L"}${p.x},${p.y}`).join(" ");
+              const grs = [1,5,10,20,50,100].filter(v=>v<=maxR+5);
+              return (
+                <div style={S.chartCard}>
+                  <div style={S.chartMeta}>
+                    <span style={S.chartSite}>{histSite?.url.replace(/^https?:\/\//,"")}</span>
+                    <span style={S.chartKw}>{histKw}</span>
+                  </div>
+                  <svg viewBox={`0 0 ${W} ${H}`} style={{width:"100%",height:"auto",display:"block"}}>
+                    {grs.map(v=>{const y=sy(v);return y==null?null:(
+                      <g key={v}>
+                        <line x1={pL} y1={y} x2={W-pR} y2={y} stroke="#1a2d42" strokeWidth="1" strokeDasharray="4,4"/>
+                        <text x={pL-6} y={y+4} textAnchor="end" fontSize="9" fill="#3a5a7a">{v}位</text>
+                      </g>
+                    );})}
+                    {lp.length>1&&<path d={`${d} L${lp[lp.length-1].x},${H-pB} L${lp[0].x},${H-pB} Z`} fill="url(#ag)" opacity="0.25"/>}
+                    <defs><linearGradient id="ag" x1="0" x2="0" y1="0" y2="1"><stop offset="0%" stopColor="#38bdf8" stopOpacity="0.8"/><stop offset="100%" stopColor="#38bdf8" stopOpacity="0"/></linearGradient></defs>
+                    {lp.length>1&&<path d={d} fill="none" stroke="#38bdf8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>}
+                    {pts.map((p,i)=>p.y==null?null:(
+                      <g key={i}>
+                        <circle cx={p.x} cy={p.y} r="4.5" fill="#38bdf8" stroke="#070e17" strokeWidth="2"/>
+                        <text x={p.x} y={p.y-9} textAnchor="middle" fontSize="9" fill="#7aa8c8" fontWeight="700">{p.rank}</text>
+                        {(i===0||i===hist.length-1||hist.length<=8)&&<text x={p.x} y={H-6} textAnchor="middle" fontSize="8" fill="#3a5a7a">{p.date.slice(5)}</text>}
+                      </g>
+                    ))}
+                  </svg>
+                  <div style={S.statStrip}>
+                    {[{label:"最高順位",val:vr.length?Math.min(...vr)+"位":"—"},{label:"最低順位",val:vr.length?Math.max(...vr)+"位":"—"},{label:"平均順位",val:vr.length?Math.round(vr.reduce((a,b)=>a+b,0)/vr.length)+"位":"—"},{label:"計測回数",val:hist.length+"回"}].map(({label,val})=>(
+                      <div key={label} style={S.statItem}><div style={S.statItemLabel}>{label}</div><div style={S.statItemVal}>{val}</div></div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+            {(!histSiteId||!histKw)&&<div style={S.emptyState}>サイトとキーワードを選択するとグラフが表示されます</div>}
+          </div>
+        )}
+
+        {/* SETTINGS */}
+        {view==="settings" && (
+          <div style={{maxWidth:780}}>
+            <h1 style={S.pageTitle}>設定</h1>
+            <Sec title="Google OAuth 2.0 Client ID">
+              <p style={S.hint}>
+                <a href="https://console.cloud.google.com/" target="_blank">Google Cloud Console</a> でプロジェクトを作成し、
+                Search Console APIを有効化 → OAuth 2.0クライアントID（Webアプリ）を発行。<br/>
+                承認済みJSオリジンに <code>{window.location.origin}</code> を追加してください。
+              </p>
+              <div style={{...S.row,marginTop:10}}>
+                <input style={S.input} placeholder="xxxxx.apps.googleusercontent.com" value={tempClientId||clientId} onChange={e=>setTempClientId(e.target.value)}/>
+                <button style={S.btnPrimary} onClick={()=>{const id=(tempClientId||clientId).trim();setClientId(id);localStorage.setItem("rt_client_id",id);setTempClientId("");alert("保存しました");}}>保存</button>
+              </div>
+            </Sec>
+
+            <Sec title={`サイト管理（${sites.length}/100）— クリックでキーワード設定`}>
+              <div style={S.row}>
+                <input style={S.input} placeholder="https://example.com" value={newSiteUrl} onChange={e=>setNewSiteUrl(e.target.value)} onKeyDown={e=>e.key==="Enter"&&addSite()}/>
+                <button style={S.btnPrimary} onClick={addSite}>追加</button>
+                <button style={S.btnSmall} onClick={()=>{
+                  const bulk=prompt("URLを改行区切りで入力");if(!bulk)return;
+                  const urls=bulk.split("\n").map(u=>u.trim()).filter(Boolean);
+                  const ex=new Set(sites.map(s=>s.url));
+                  const ns=urls.filter(u=>!ex.has(u)).map(u=>({id:`${Date.now()}${Math.random()}`,url:u,keywords:[]}));
+                  setSites([...sites,...ns].slice(0,100));
+                }}>一括入力</button>
+              </div>
+              <div style={{marginTop:16,display:"flex",flexDirection:"column",gap:8}}>
+                {sites.map(site=>(
+                  <div key={site.id} style={S.siteCard}>
+                    <div style={S.siteCardHeader} onClick={()=>setEditingSiteId(editingSiteId===site.id?null:site.id)}>
+                      <div style={S.siteCardUrl}>
+                        <span style={S.expandIcon}>{editingSiteId===site.id?"▾":"▸"}</span>
+                        {site.url.replace(/^https?:\/\//,"")}
+                      </div>
+                      <div style={{display:"flex",alignItems:"center",gap:10}}>
+                        <span style={S.kwCountBadge}>{site.keywords.length}/10 KW</span>
+                        <button style={S.btnDanger} onClick={e=>{e.stopPropagation();removeSite(site.id);}}>削除</button>
+                      </div>
+                    </div>
+                    {editingSiteId===site.id&&(
+                      <div style={S.siteCardBody}>
+                        <div style={S.row}>
+                          <input style={{...S.input,fontSize:12}} placeholder={`キーワードを入力（${site.keywords.length}/10）`}
+                            value={newKwInputs[site.id]||""} onChange={e=>setNewKwInputs({...newKwInputs,[site.id]:e.target.value})}
+                            onKeyDown={e=>e.key==="Enter"&&addKeyword(site.id)}/>
+                          <button style={{...S.btnPrimary,fontSize:12,padding:"7px 14px"}} onClick={()=>addKeyword(site.id)}>追加</button>
+                        </div>
+                        <div style={S.kwChipWrap}>
+                          {site.keywords.length===0&&<span style={{fontSize:12,color:"#2a3d50"}}>まだキーワードがありません</span>}
+                          {site.keywords.map(kw=>(
+                            <div key={kw} style={S.kwChip}>{kw}<button style={S.chipDel} onClick={()=>removeKeyword(site.id,kw)}>×</button></div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ))}
+                {sites.length===0&&<div style={S.emptyState}>URLを入力してサイトを追加してください</div>}
+              </div>
+            </Sec>
+
+            <Sec title="データ管理">
+              <div style={S.row}>
+                <button style={S.btnOutline} onClick={()=>{
+                  const rows=[["サイトURL","キーワード","日付","順位"]];
+                  sites.forEach(site=>site.keywords.forEach(kw=>{
+                    const p=`${site.id}|||${kw}|||`;
+                    Object.entries(records).filter(([k])=>k.startsWith(p)).sort(([a],[b])=>a.localeCompare(b))
+                      .forEach(([k,v])=>rows.push([site.url,kw,k.split("|||")[2],v??"圏外"]));
+                  }));
+                  const csv=rows.map(r=>r.map(c=>`"${c}"`).join(",")).join("\n");
+                  const a=document.createElement("a");
+                  a.href=URL.createObjectURL(new Blob(["\uFEFF"+csv],{type:"text/csv"}));
+                  a.download=`rankscope_${fmtDate(new Date())}.csv`;a.click();
+                }}>📥 CSVエクスポート</button>
+                <button style={{...S.btnOutline,borderColor:"#f87171",color:"#f87171"}} onClick={()=>{if(confirm("全履歴を削除しますか？"))setRecords({});}}>🗑 履歴を全削除</button>
+              </div>
+            </Sec>
+          </div>
+        )}
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
