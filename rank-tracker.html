@@ -7,7 +7,8 @@
 <script src="https://unpkg.com/react@18/umd/react.development.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
-<script src="https://apis.google.com/js/api.js" async></script>
+<script src="https://apis.google.com/js/api.js"></script>
+<script src="https://accounts.google.com/gsi/client" async></script>
 <style>
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body { background: #070e17; color: #c8d8e8; font-family: 'DM Mono', 'Courier New', monospace; }
@@ -135,22 +136,30 @@ function App() {
   // Wait for gapi
   useEffect(() => {
     const check = setInterval(() => {
-      if (window.gapi) { clearInterval(check); window.gapi.load("client:auth2", () => setGapiReady(true)); }
+      if (window.gapi) { clearInterval(check); window.gapi.load("client", () => setGapiReady(true)); }
     }, 300);
     return () => clearInterval(check);
   }, []);
 
   useEffect(() => { save({ sites, records }); }, [sites, records]);
 
-  const signIn = async () => {
+  const signIn = () => {
     if (!clientId) { alert("まず設定画面でClient IDを入力してください"); return; }
     try {
-      await window.gapi.client.init({ clientId, scope: SCOPES, discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/webmasters/v3/rest"] });
-      const user = await window.gapi.auth2.getAuthInstance().signIn();
-      setToken(user.getAuthResponse().access_token);
+      const tokenClient = window.google.accounts.oauth2.initTokenClient({
+        client_id: clientId,
+        scope: SCOPES,
+        callback: async (resp) => {
+          if (resp.error) { alert("認証失敗: " + resp.error); return; }
+          await window.gapi.client.init({});
+          window.gapi.client.setToken({ access_token: resp.access_token });
+          setToken(resp.access_token);
+        },
+      });
+      tokenClient.requestAccessToken();
     } catch(e) { alert("認証失敗: " + (e.error || e.message)); }
   };
-  const signOut = () => { window.gapi?.auth2?.getAuthInstance()?.signOut(); setToken(null); };
+  const signOut = () => { window.google?.accounts?.oauth2?.revoke(token, ()=>{}); setToken(null); };
 
   const addSite = () => {
     const url = newSiteUrl.trim();
